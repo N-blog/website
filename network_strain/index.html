@@ -1,2 +1,117 @@
-<title>開発中</title>
-<h1>現在開発中です。お待ちください</h1>
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>ネットワーク負荷テスト（Retrun.txt）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: sans-serif; padding: 16px; }
+    label { display: block; margin: 8px 0; }
+    input { margin-left: 8px; }
+    button { margin: 8px 8px 8px 0; }
+    .log { white-space: pre-wrap; background: #f0f0f0; padding: 12px; border-radius: 8px; max-height: 300px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>Retrun.txt ネットワーク負荷テスト</h1>
+  <p>このページは <code>Retrun.txt</code> を並列で読み込んで、ネットワーク帯域を使うテストです。</p>
+
+  <label>並列数（接続数）<input id="concurrency" type="number" value="6" min="1" max="20" /></label>
+  <label>最大時間（秒）<input id="duration" type="number" value="20" min="1" max="120" /></label>
+
+  <button id="startBtn">Start</button>
+  <button id="stopBtn">Stop</button>
+
+  <h2>ログ</h2>
+  <div class="log" id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let running = false;
+    let controllers = [];
+    let totalBytes = 0;
+    let startTime = 0;
+    let timerId = null;
+
+    function log(msg) {
+      const t = ((performance.now() - startTime) / 1000).toFixed(2);
+      logEl.textContent += `[${t}s] ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function fetchStream(url, idx, controller, deadline) {
+      try {
+        const bust = `?bust=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const resp = await fetch(url + bust, { cache: 'no-store', signal: controller.signal });
+        const reader = resp.body.getReader();
+        let received = 0;
+
+        while (running && performance.now() < deadline) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          totalBytes += value.byteLength;
+        }
+
+        log(`#${idx} 終了: ${received} bytes`);
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          log(`#${idx} エラー: ${e.message}`);
+        }
+      }
+
+      // 再接続（時間内なら）
+      if (running && performance.now() < deadline) {
+        return fetchStream(url, idx, controller, deadline);
+      }
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      controllers = [];
+      totalBytes = 0;
+      startTime = performance.now();
+      logEl.textContent = '';
+
+      const concurrency = parseInt(document.getElementById('concurrency').value, 10);
+      const duration = parseInt(document.getElementById('duration').value, 10);
+      const deadline = performance.now() + duration * 1000;
+      const url = './Retrun.txt';
+
+      log(`開始: 並列=${concurrency}, 時間=${duration}s`);
+
+      for (let i = 0; i < concurrency; i++) {
+        const controller = new AbortController();
+        controllers.push(controller);
+        fetchStream(url, i + 1, controller, deadline);
+      }
+
+      timerId = setInterval(() => {
+        const elapsed = performance.now() - startTime;
+        const mbps = ((totalBytes * 8) / elapsed / 1000).toFixed(2);
+        log(`現在の速度: ${mbps} Mbps`);
+        if (performance.now() >= deadline) stop();
+      }, 1000);
+    }
+
+    function stop() {
+      if (!running) return;
+      running = false;
+      controllers.forEach(c => c.abort());
+      controllers = [];
+      clearInterval(timerId);
+      const elapsed = performance.now() - startTime;
+      const mb = (totalBytes / (1024 * 1024)).toFixed(2);
+      const mbps = ((totalBytes * 8) / elapsed / 1000).toFixed(2);
+      log(`停止: 合計=${mb} MB, 平均速度=${mbps} Mbps`);
+    }
+
+    startBtn.onclick = start;
+    stopBtn.onclick = stop;
+  </script>
+</body>
+</html>
